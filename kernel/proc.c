@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "sysinfo.h"
 
 struct cpu cpus[NCPU];
 
@@ -127,6 +128,16 @@ found:
     return 0;
   }
 
+  /*Start my code*/
+  //Allocate a usyscall page
+  if((p->usyscall = (struct usyscall *)kalloc())==0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+  memmove(p->usyscall,&p->pid,sizeof(int));//初始化为当前进程号
+  /*End my code*/
+
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
   if(p->pagetable == 0){
@@ -150,6 +161,12 @@ found:
 static void
 freeproc(struct proc *p)
 {
+  /*Start my code*/
+  if(p->usyscall)
+    kfree((void*)p->usyscall);
+  p->usyscall = 0;
+  /*End my code*/
+
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
@@ -196,6 +213,19 @@ proc_pagetable(struct proc *p)
     return 0;
   }
 
+  /*Start my code*/
+  #ifdef LAB_PGTBL
+  if(mappages(pagetable, USYSCALL, PGSIZE,
+		(uint64)(p->usyscall),PTE_R | PTE_U) < 0) {
+    //如果内存映射失败，恢复以上页面
+    uvmunmap(pagetable,TRAMPOLINE,1,0);
+    uvmunmap(pagetable,TRAPFRAME,1,0);
+    uvmfree(pagetable,0);
+    return 0;
+  }
+  #endif
+  /*End my code*/
+
   return pagetable;
 }
 
@@ -206,6 +236,11 @@ proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
+  /*Start my code*/
+  #ifdef LAB_PGTBL
+  uvmunmap(pagetable,USYSCALL,1,0);
+  #endif
+  /*End my code*/
   uvmfree(pagetable, sz);
 }
 
@@ -309,6 +344,8 @@ fork(void)
 
   acquire(&wait_lock);
   np->parent = p;
+  //copy trace mask
+  np->trace_mask = p->trace_mask;
   release(&wait_lock);
 
   acquire(&np->lock);
@@ -653,4 +690,40 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+//get number of proc
+uint64
+nproc(void)
+{
+  uint64 counter = 0;
+  struct proc *p;
+  //遍历PCB
+  for(p = proc;p < &proc[NPROC];p++) {
+    acquire(&p->lock);
+    if(p->state != UNUSED){
+      ++counter;
+    }
+    release(&p->lock);
+  }
+  return counter;
+}
+
+//get sysinfo
+uint64
+sys_sysinfo(void)
+{
+  uint64 info;//用于存储用户程序传递的指针
+  struct sysinfo kinfo;//用于存储内核中的系统信息
+  struct proc *p = myproc();//获取当前进程的proc结构
+  if(argaddr(0,&info)<0){//从用户程序中获取传递的指针地址
+    return -1;
+  }
+  kinfo.freemem = freemem();
+  kinfo.nproc = nproc();
+  //将内核中的系统信息复制到用户程序的地址空间中
+  if(copyout(p->pagetable,info,(char*)&kinfo,sizeof(kinfo)) < 0){
+    return -1;
+  }
+  return 0;
 }

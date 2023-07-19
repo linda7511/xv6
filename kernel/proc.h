@@ -105,4 +105,6 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  uint trace_mask;             // This is for sys_trace()
+  struct usyscall *usyscall;  // Store physical address of sharing page
 };
