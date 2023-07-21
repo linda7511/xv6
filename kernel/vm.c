@@ -281,6 +281,33 @@ freewalk(pagetable_t pagetable)
   kfree((void*)pagetable);
 }
 
+//Print a page table
+void
+vmprint(pagetable_t pagetable, int index , int level)
+{
+  if(index == -1)//index为默认值表示刚开始打印
+    printf("page table %p\n",pagetable);
+  for(int i=0; i<512; i++){
+    pte_t pte = pagetable[i];
+    if((pte&PTE_V) && (pte & (PTE_R|PTE_W|PTE_X)) ==0){
+      uint64 child = PTE2PA(pte);
+      
+      if(level == 2)
+        printf("..%d: pte %p pa %p\n",i,pte,child);
+      else if(level == 1)
+        printf(".. ..%d: pte %p pa %p\n",i,pte,child);
+      else if(level == 0)
+        printf(".. .. ..%d: pte %p pa %p\n",i,pte,child);
+      
+      
+      vmprint((pagetable_t)child, i, level-1);
+    }else if(pte & PTE_V){
+      uint64 child = PTE2PA(pte);
+      printf(".. .. ..%d: pte %p pa %p\n",i,pte,child);
+    }
+  }
+}
+
 // Free user memory pages,
 // then free page-table pages.
 void
