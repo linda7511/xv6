@@ -5,6 +5,7 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
 
 /*
  * the kernel's page table.
@@ -153,9 +154,11 @@ mappages(pagetable_t pagetable, uint64 va, uint64 size, uint64 pa, int perm)
     if(*pte & PTE_V)
       panic("mappages: remap");
     *pte = PA2PTE(pa) | perm | PTE_V;
-    if(pa >= KERNBASE){
+    /*if(pa >= KERNBASE){
+      //acquire(&reflock);
       refnum[(pa-KERNBASE)/PGSIZE] += 1;
-    }
+      //release(&reflock);
+    }*/
     if(a == last)
       break;
     a += PGSIZE;
@@ -179,18 +182,28 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
   for(a = va; a < va + npages*PGSIZE; a += PGSIZE){
     if((pte = walk(pagetable, a, 0)) == 0)
       panic("uvmunmap: walk");
-    if((*pte & PTE_V) == 0)
+    if((*pte & PTE_V) == 0){
+      //printf("%p\n",*pte);
       panic("uvmunmap: not mapped");
+    }
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
     uint64 pa = PTE2PA(*pte);
-    if(pa>=KERNBASE){
+   // acquire(&reflock);
+    /*if(pa>=KERNBASE){
+      acquire(&reflock);
       refnum[(pa-KERNBASE)/PGSIZE]--;
-    }
+      release(&reflock);
+    }*/
     if(do_free){
-      if(refnum[(pa - KERNBASE)/PGSIZE]==1)
-        kfree((void*)pa);
+      //acquire(&reflock);
+      //if(refnum[(pa - KERNBASE)/PGSIZE]==1){
+        //release(&reflock);
+	kfree((void*)pa);
+      //}else
+      //release(&reflock);
     }
+   // release(&reflock);
     *pte = 0;
   }
 }
@@ -323,8 +336,12 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     *pte = *pte | PTE_COW;
     flags = PTE_FLAGS(*pte);
     if(mappages(new, i, PGSIZE, pa, flags) != 0){
+      printf("err\n");
       goto err;
     }
+    acquire(&reflock);
+    refnum[(pa-KERNBASE)/PGSIZE]++;
+    release(&reflock);
   }
   return 0;
 
@@ -356,34 +373,14 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0)
-      return -1;
-    pte_t *pte;
-    if((pte = walk(pagetable, va0, 0))== 0){
-      return -1;
+    if(uncopied_cow(pagetable,va0)){
+      if(cowalloc(pagetable,va0)<0)
+        return -1;
     }
-    if(*pte & PTE_COW){
-      char *mem;
-      uint flags;
-      if(refnum[(pa0 - KERNBASE)/PGSIZE] == 2){
-        *pte = *pte | PTE_W;
-	*pte = *pte & ~PTE_COW;
-      }else{
-        if((mem = kalloc()) ==0){
-          return -1;
-	}else{
-          refnum[(pa0 - KERNBASE)/PGSIZE]--;
-	  memmove(mem,(char*)pa0,PGSIZE);
-	  *pte = *pte | PTE_W;
-	  *pte = *pte & ~PTE_COW;
-	  flags = PTE_FLAGS(*pte);
-	  *pte = PA2PTE((uint64)mem)|flags;
-	  refnum[((uint64)mem - KERNBASE)/PGSIZE]++;
-	  pa0 = (uint64)mem;
-	}
-      }
-    }
+ 
+    pa0 = walkaddr(pagetable,va0);
+    if(pa0==0)
+	return -1;
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
@@ -462,4 +459,44 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
+}
+
+int
+uncopied_cow(pagetable_t pgtbl,uint64 va){
+  if(va >= MAXVA) 
+    return 0;
+  pte_t* pte = walk(pgtbl, va, 0);
+  if(pte == 0)             // 如果这个页不存在
+    return 0;
+  if((*pte & PTE_V) == 0)
+    return 0;
+  if((*pte & PTE_U) == 0)
+    return 0;
+  return ((*pte) & PTE_COW); // 有 PTE_C 的代表还没复制过，并且是 cow 页
+}
+
+int cowalloc(pagetable_t pgtbl,uint64 va){
+  pte_t* pte = walk(pgtbl, va, 0);
+  uint64 perm = PTE_FLAGS(*pte);
+
+  if(pte == 0) return -1;
+  uint64 prev_sta = PTE2PA(*pte); // 这里的 prev_sta 就是这个页帧原来使用的父进程的页表
+                                  // 这里写 sta 是因为这个地址是和页帧对齐的（page-aligned）
+                                  // 所以写个 sta 表示一个页帧的开始
+  char* newpage = kalloc();     
+  if(!newpage){
+    return -1;
+  }
+  uint64 va_sta = PGROUNDDOWN(va); // 当前页帧
+  perm &= (~PTE_COW); // 复制之后就不是合法的 COW 页了
+  perm |= PTE_W;    // 复制之后就可以写了
+  
+  memmove(newpage,(char*)prev_sta, PGSIZE); // 把父进程页帧的数据复制一遍
+  uvmunmap(pgtbl, va_sta, 1, 1);      // 然后取消对父进程页帧的映射
+                                                                           
+  if(mappages(pgtbl, va_sta, PGSIZE, (uint64)newpage, perm) < 0){
+    kfree(newpage);
+    return -1;
+  }
+  return 0;
 }

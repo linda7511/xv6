@@ -86,6 +86,7 @@ LD = $(TOOLPREFIX)ld
 OBJCOPY = $(TOOLPREFIX)objcopy
 OBJDUMP = $(TOOLPREFIX)objdump
 
+#CFLAGS = -Wall -O -fno-omit-frame-pointer -ggdb
 CFLAGS = -Wall -Werror -O -fno-omit-frame-pointer -ggdb
 
 ifdef LAB
@@ -307,6 +308,7 @@ qemu: $K/kernel fs.img
 qemu-gdb: $K/kernel .gdbinit fs.img
 	@echo "*** Now run 'gdb' in another window." 1>&2
 	$(QEMU) $(QEMUOPTS) -S $(QEMUGDB)
+gdb: riscv64-unknown-elf-gdb kernel/kernel
 
 ifeq ($(LAB),net)
 # try to generate a unique port for the echo server

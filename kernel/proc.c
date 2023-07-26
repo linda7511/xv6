@@ -280,6 +280,7 @@ fork(void)
   if((np = allocproc()) == 0){
     return -1;
   }
+ // printf("%d fork0\n",np->pid);
 
   // Copy user memory from parent to child.
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
@@ -287,6 +288,7 @@ fork(void)
     release(&np->lock);
     return -1;
   }
+  //printf("%d fork1\n",np->pid);
   np->sz = p->sz;
 
   // copy saved user registers.
@@ -314,7 +316,7 @@ fork(void)
   acquire(&np->lock);
   np->state = RUNNABLE;
   release(&np->lock);
-
+  //printf("%d fork2\n",pid);
   return pid;
 }
 
@@ -447,6 +449,7 @@ scheduler(void)
 
     for(p = proc; p < &proc[NPROC]; p++) {
       acquire(&p->lock);
+      
       if(p->state == RUNNABLE) {
         // Switch to chosen process.  It is the process's job
         // to release its lock and then reacquire it

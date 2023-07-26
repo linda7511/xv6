@@ -6,12 +6,15 @@
 #include "proc.h"
 #include "defs.h"
 
-extern int refnum[];
+
+//extern int refnum[];
+
 
 struct spinlock tickslock;
 uint ticks;
 
 extern char trampoline[], uservec[], userret[];
+extern struct spinlock reflock;
 
 // in kernelvec.S, calls kerneltrap().
 void kernelvec();
@@ -67,37 +70,12 @@ usertrap(void)
     intr_on();
 
     syscall();
-  }else if(r_scause() == 13||r_scause() == 15){
-    pte_t *pte;
-    uint64 addr = r_stval();//最近一次发生store或原子内存操作异常的存储访问地址
-    addr = PGROUNDDOWN(addr);//指向发生异常的页尾
-    if((pte = walk(p->pagetable,addr,0))==0||!(*pte & PTE_COW)){
-      p->killed =1;
-    }else{
-      char *mem;
-      uint64 pa = PTE2PA(*pte);
-      uint flags;
-      require(&kmem.lock);
-      if(refnum[(pa - KERNBASE)/PGSIZE] ==2){//物理页的关联页表是剩下最初的父进程的页表
-        *pte = *pte | PTE_W;//页表权限修改为可写
-	*pte = *pte & ~PTE_COW;//取消COW标志
-      }else{//分配一页并复制之前映射的旧页到新分配的页
-        if((mem = kalloc()) == 0){
-          p->killed = 1;
-	}else{
-	  memmove(mem,(char*)pa,PGSIZE);
-	  uvmunmap(p->pagetable, addr,PGSIZE,0);//删除映射
-	  *pte = *pte |PTE_W;
-	  *pte = *pte &~PTE_COW;
-	  flags = PTE_FLAGS(*pte);
-	  *pte = PA2PTE((uint64)mem)|flags;
-          if(mappages(p->pagetable,addr,PGSIZE,(uint64)mem,flags);//建立新的映射
-	 // refnum[((uint64)mem - KERNBASE)/PGSIZE]++;
-	}
-     }
-    }
   }else if((which_dev = devintr()) != 0){
-    // ok
+    //ok
+  }else if(r_scause() == 15 && uncopied_cow(p->pagetable, r_stval())){
+    if(cowalloc(p->pagetable,r_stval()) < 0){
+      p->killed = 1;
+    }
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
@@ -110,7 +88,6 @@ usertrap(void)
   // give up the CPU if this is a timer interrupt.
   if(which_dev == 2)
     yield();
-
   usertrapret();
 }
 
