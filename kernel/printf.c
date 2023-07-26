@@ -25,6 +25,19 @@ static struct {
 
 static char digits[] = "0123456789abcdef";
 
+/*Start my code*/
+void backtrace(void)
+{
+  printf("backtrace:\n");
+  uint64 fp = r_fp();//获取当前正在执行函数的fp
+  uint64 top = PGROUNDUP(fp);//计算当前进程栈的最高地址
+  while(fp < top){
+    printf("%p\n",*((uint64 *)(fp - 8)));//打印Return Adress中的内容，即函数返回地址
+    fp = *((uint64 *)(fp - 16));//fp获取T0 Prev Frame中的内容从而指向前一个stack frame从而实现回溯
+  }
+}
+/*End my code*/
+
 static void
 printint(int xx, int base, int sign)
 {
