@@ -103,8 +103,8 @@ sys_uptime(void)
 uint64 
 sys_sigalarm(void)
 {
-  int n;
-  uint64 fn;
+  int n=0;
+  uint64 fn=0;
   if(argint(0,&n)<0||argaddr(1,&fn)<0)
     return -1;
   struct proc *p=myproc();
