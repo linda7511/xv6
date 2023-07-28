@@ -102,6 +102,21 @@ e1000_transmit(struct mbuf *m)
   // the TX descriptor ring so that the e1000 sends it. Stash
   // a pointer so that it can be freed after sending.
   //
+  acquire(&e1000_lock);
+  uint index = regs[E1000_TDT];//向E1000询问它期望下一个数据包的TX环索引
+  if((tx_ring[index].status & E1000_TXD_STAT_DD) == 0){//检查描述符的状态是否有效
+    release(&e1000_lock);
+    return -1;
+  }
+  if(tx_mbufs[index])//检查当前指向的描述符是否之前已经分配了一个mbuf
+    mbuffree(tx_mbufs[index]);//已经分配则释放该mbuf
+  //将m填写到该描述符
+  tx_mbufs[index] = m;
+  tx_ring[index].length = m->len;//mbuf的长度
+  tx_ring[index].addr = (uint64)m->head;//mbuf的头部地址
+  tx_ring[index].cmd = E1000_TXD_CMD_RS | E1000_TXD_CMD_EOP;//配置传输描述符的命令字段
+  regs[E1000_TDT] = (index + 1)%TX_RING_SIZE;//指向下一个传输描述符环的索引
+  release(&e1000_lock);
   
   return 0;
 }
@@ -115,6 +130,19 @@ e1000_recv(void)
   // Check for packets that have arrived from the e1000
   // Create and deliver an mbuf for each packet (using net_rx()).
   //
+  uint index = regs[E1000_RDT];//获取当前接受描述符环的索引
+  index = (index + 1) % RX_RING_SIZE;//更新接收描述符环的索引指向下一个要检查的描述符
+  while(rx_ring[index].status & E1000_RXD_STAT_DD){//一直等到对应的数据包已经接收到
+    rx_mbufs[index]->len = rx_ring[index].length;//接收到的数据包的长度写入mbuf的len字段
+    net_rx(rx_mbufs[index]);//将该mbuf传送到network stack
+    if((rx_mbufs[index] = mbufalloc(0)) == 0)//分配一个新的mbuf到刚刚被送走的mbuf位置
+      panic("e1000");
+    rx_ring[index].addr = (uint64)rx_mbufs[index]->head;
+    rx_ring[index].status = 0;
+    index = (index + 1) % RX_RING_SIZE;
+  }
+  
+  regs[E1000_RDT] = (index - 1) % RX_RING_SIZE;//更新寄存器为存放最近处理过的描述符的位置
 }
 
 void
