@@ -164,6 +164,36 @@ bad:
   end_op();
   return -1;
 }
+static struct inode* create(char*,short int,short int,short int);
+
+/*Start my code*/
+uint64
+sys_symlink(void)
+{
+  char target[MAXPATH], path[MAXPATH];//保存目标路径和符号链接的路径
+  struct inode *ip;
+  int n;//从用户空间传递过来的参数的长度
+
+  if ((n = argstr(0, target, MAXPATH)) < 0 || argstr(1, path, MAXPATH) < 0) {//获取目标路径和符号链接路径
+    return -1;
+  }
+  begin_op();
+  //创建一个新的符号链接节点
+  if((ip = create(path, T_SYMLINK, 0, 0)) == 0) {
+    end_op();
+    return -1;
+  }
+  // 将目标路径的内容写入符号链接节点的数据区域
+  if(writei(ip, 0, (uint64)target, 0, n) != n) {
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+  iunlockput(ip);
+  end_op();
+  return 0;
+}
+/*End my code*/
 
 // Is the directory dp empty except for "." and ".." ?
 static int
@@ -287,9 +317,11 @@ uint64
 sys_open(void)
 {
   char path[MAXPATH];
+  char sympath[MAXPATH];
   int fd, omode;
   struct file *f;
   struct inode *ip;
+  struct inode* symip=0;
   int n;
 
   if((n = argstr(0, path, MAXPATH)) < 0 || argint(1, &omode) < 0)
@@ -313,6 +345,33 @@ sys_open(void)
       iunlockput(ip);
       end_op();
       return -1;
+    }
+  }
+
+  //判断是不是符号链接
+  if(!(omode & O_NOFOLLOW) && ip->type == T_SYMLINK){
+    int i = 0;
+    //循环向下搜索，直到找到非符号链接文件或者搜索深度达到10
+    while(ip->type==T_SYMLINK){
+      if(readi(ip,0,(uint64)&sympath,0,MAXPATH)==-1){
+        //读取文件中的字符串到sympath
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+      iunlockput(ip);
+      if((symip = namei(sympath)) == 0){
+        //搜索sympath对应的inode
+	end_op();
+	return -1;
+      }
+      i++;
+      if(i == 10){
+        end_op();
+	return -1;
+      }
+      ip = symip;
+      ilock(ip);//给新获取的inode加锁
     }
   }
 
