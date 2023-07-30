@@ -484,3 +484,93 @@ sys_pipe(void)
   }
   return 0;
 }
+
+uint64
+sys_mmap(void)
+{
+  struct file *f;//文件描述符，指向要映射的文件
+  uint64 addr;//要映射的起始地址
+  uint64 len;//映射的长度
+  int prot,flags,offset;
+  struct vma *v = 0;
+  
+  //获取参数
+  if(argaddr(0,&addr)<0||argaddr(1,&len)<0||argint(2,&prot)<0||argint(3,&flags)<0||argfd(4,0,&f)<0||argint(5,&offset)<0){
+    return -1;
+  }
+   if(len<0||offset<0||f==0){
+     return -1;
+   }
+   if(flags == MAP_SHARED){
+     if(!f->readable){
+       return -1;
+     }
+     if(!f->writable){
+       if(prot&PROT_WRITE){
+         return -1;
+       }
+     }
+   }
+   //find a slot vma in proc
+   struct proc *p;
+   p = myproc();
+   int i;
+   uint64 sz = 0;
+   for(i = 0;i<NOVMA;i++){
+     if(p->vmas[i].len == 0){
+    //判断该地址是否存在文件内容
+       v = &(p->vmas[i]);
+       break;
+     }
+     sz+=p->vmas[i].len;
+   }
+   if(v==0)     
+     return 0xffffffffffffffff;
+   sz = PGROUNDUP(sz);
+   //将文件内容映射到高地址（这里取16+2）
+   addr = MINADDR+sz;
+   if(addr+len>(MAXVA-2*PGSIZE)){
+     panic("vma:no free areas!\n");
+   }
+   v->f = filedup(f);
+   v->va = addr;
+   v->len = len;
+   v->prot = prot;
+   v->flags = flags;
+   v->offset = offset;
+   return addr;
+}
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr,len;
+  int i;
+  uint64 sz;
+  struct proc *p = myproc();
+  if(argaddr(0, &addr)<0||argaddr(1, &len)<0){
+    return -1;
+  }
+  addr = PGROUNDDOWN(addr);
+  //找到addr对应的vma
+  for(i=0;i<NOVMA;i++){
+    if(p->vmas[i].va == addr)
+      break;
+  }
+  //取消映射
+  for(int j=i;j<NOVMA;j++){
+    sz = len < p->vmas[j].len ? len:p->vmas[j].len;
+    len-=sz;
+    if(p->vmas[j].flags==1)//如果是MAP_SHARED,需要将数据写回
+      filewrite(p->vmas[j].f,addr,sz);
+    uvmunmap(p->pagetable, addr, sz/PGSIZE, 1);
+    addr+=sz;
+    p->vmas[j].len-=sz;
+    p->vmas[j].offset+=sz;
+    if(p->vmas[j].len == 0)
+      fileclose(p->vmas[j].f);
+    if(len == 0)
+      break;
+  }
+  return 0;
+}

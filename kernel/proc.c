@@ -122,6 +122,7 @@ found:
 
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
+    printf("allocproc failed1\n");
     freeproc(p);
     release(&p->lock);
     return 0;
@@ -130,6 +131,7 @@ found:
   // An empty user page table.
   p->pagetable = proc_pagetable(p);
   if(p->pagetable == 0){
+    printf("allocproc failed2\n");
     freeproc(p);
     release(&p->lock);
     return 0;
@@ -184,6 +186,7 @@ proc_pagetable(struct proc *p)
   // to/from user space, so not PTE_U.
   if(mappages(pagetable, TRAMPOLINE, PGSIZE,
               (uint64)trampoline, PTE_R | PTE_X) < 0){
+    //printf("proc_pagetable failed1\n");
     uvmfree(pagetable, 0);
     return 0;
   }
@@ -191,6 +194,7 @@ proc_pagetable(struct proc *p)
   // map the trapframe just below TRAMPOLINE, for trampoline.S.
   if(mappages(pagetable, TRAPFRAME, PGSIZE,
               (uint64)(p->trapframe), PTE_R | PTE_W) < 0){
+    //printf("proc_pagetable failed1\n");
     uvmunmap(pagetable, TRAMPOLINE, 1, 0);
     uvmfree(pagetable, 0);
     return 0;
@@ -204,6 +208,7 @@ proc_pagetable(struct proc *p)
 void
 proc_freepagetable(pagetable_t pagetable, uint64 sz)
 {
+  //printf("freepagetable fail\n");
   uvmunmap(pagetable, TRAMPOLINE, 1, 0);
   uvmunmap(pagetable, TRAPFRAME, 1, 0);
   uvmfree(pagetable, sz);
@@ -283,6 +288,7 @@ fork(void)
 
   // Copy user memory from parent to child.
   if(uvmcopy(p->pagetable, np->pagetable, p->sz) < 0){
+    //printf("uvmcopy failed\n");
     freeproc(np);
     release(&np->lock);
     return -1;
@@ -304,7 +310,7 @@ fork(void)
   safestrcpy(np->name, p->name, sizeof(p->name));
 
   pid = np->pid;
-
+  
   release(&np->lock);
 
   acquire(&wait_lock);
@@ -312,9 +318,23 @@ fork(void)
   release(&wait_lock);
 
   acquire(&np->lock);
+  for(int i=0;i<NOVMA;i++){
+    if(p->vmas[i].len != 0){
+      memmove(&(np->vmas[i]),&(p->vmas[i]), sizeof(p->vmas[i]));
+      filedup(np->vmas[i].f);
+    }
+  }
   np->state = RUNNABLE;
   release(&np->lock);
-
+/* 
+  acquire(&np->lock);
+  for(int i=0;i<NOVMA;i++){
+    if(p->vmas[i].len != 0){
+      np->vmas[i]=p->vmas[i];
+      filedup(np->vmas[i].f);
+    }
+  }
+  release(&np->lock);*/
   return pid;
 }
 
@@ -340,9 +360,21 @@ void
 exit(int status)
 {
   struct proc *p = myproc();
+  uint64 len;
 
   if(p == initproc)
     panic("init exiting");
+
+  for(int i =0;i<NOVMA;i++){
+    if((len=p->vmas[i].len)!=0){
+      if(p->vmas[i].flags == 1)
+        filewrite(p->vmas[i].f,p->vmas[i].va,len);
+      uvmunmap(p->pagetable,p->vmas[i].va,len/PGSIZE,1);
+      p->vmas[i].flags=0;
+      p->vmas[i].len=0;
+      p->vmas[i].prot=0;
+    }
+ }
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){
@@ -389,6 +421,7 @@ wait(uint64 addr)
 
   acquire(&wait_lock);
 
+  //printf("wait-addr-%d\n",addr);
   for(;;){
     // Scan through table looking for exited children.
     havekids = 0;
@@ -407,7 +440,9 @@ wait(uint64 addr)
             release(&wait_lock);
             return -1;
           }
+	  //printf("freeproc ing\n");
           freeproc(np);
+	  //printf("freeproc out\n");
           release(&np->lock);
           release(&wait_lock);
           return pid;

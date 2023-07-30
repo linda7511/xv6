@@ -5,6 +5,10 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "sleeplock.h"
+#include "fs.h"
+#include "file.h"
+#include "fcntl.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -50,7 +54,7 @@ usertrap(void)
   // save user program counter.
   p->trapframe->epc = r_sepc();
   
-  if(r_scause() == 8){
+  /*if(r_scause() == 8){
     // system call
 
     if(p->killed)
@@ -65,8 +69,79 @@ usertrap(void)
     intr_on();
 
     syscall();
-  } else if((which_dev = devintr()) != 0){
-    // ok
+  }*/ if(r_scause() == 13){
+    uint64 va = r_stval();//获取导致页错误的虚拟地址
+    va = PGROUNDDOWN(va);//向下对齐到页边界
+    if(va>=MINADDR&&va<TRAPFRAME){
+      if (p->killed)    
+        exit(-1);
+     
+      intr_off();//关闭中断
+      struct vma *v=0;
+      //寻找虚拟地址va对应的VMA
+      for(int i=0;i<NOVMA;i++){
+        if(p->vmas[i].va<=va&&va<p->vmas[i].len+p->vmas[i].va){
+          v = &(p->vmas[i]);
+          break;
+        }
+      }
+      //找不到包含va的VMA
+      if(v==0){
+	p->killed = 1;
+	exit(-1);
+        panic("no such a trap-page in vmas!\n");
+      }
+      //找到了对应的VMA
+      char *mem;
+      mem = kalloc();//分配一个物理内存页面
+      if(mem == 0){
+        p->killed = 1;
+        exit(-1);
+      }
+      memset(mem,0,PGSIZE);
+      //根据VMA的偏移量和文件指针，从对应文件读取va对应位置的数据到物理页面中
+      struct file* fs = v->f;
+      uint off = (va-v->va+v->offset);
+      ilock(fs->ip);
+      readi(fs->ip,0,(uint64)mem,(off),PGSIZE);
+      iunlock(fs->ip);
+      //设置PTE的标志
+      int pte_flags;
+      
+      if(v->flags == 0x2){
+        pte_flags = PTE_R |PTE_W;
+      }
+      else{
+        pte_flags = (v->prot>1)? (PTE_R|PTE_W):PTE_R;
+      }
+      pte_flags|=PTE_U;
+      /*pte_flags = PTE_U;
+      if(v->prot & PROT_READ) pte_flags |= PTE_R;
+      if(v->prot & PROT_WRITE) pte_flags |= PTE_W;
+      if(v->prot & PROT_EXEC) pte_flags |= PTE_X;*/
+      //将虚拟地址va映射到刚刚分配的物理页面
+      if(mappages(p->pagetable, va, PGSIZE, (uint64)mem, pte_flags)!=0){
+        kfree(mem);
+        exit(-1);
+      }
+      
+     
+      usertrapret();
+    }
+  } if(r_scause() == 8){
+      //system call
+      if(p->killed)
+        exit(-1);
+      // sepc points to the ecall instruction,
+      // but we want to return to the next instruction.
+      p->trapframe->epc += 4;
+      // an interrupt will change sstatus &c registers,
+      // so don't enable until done with those registers.
+      intr_on();
+      syscall();
+  }
+    else if((which_dev = devintr()) != 0){
+	      // ok
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
